@@ -1,6 +1,10 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import spidev
+try:
+    import spidev
+    spidev_available = True
+except:
+    spidev_available = False
 import time
 import threading
 import random
@@ -53,10 +57,14 @@ LED_GROUPS = {
     "photon_ring": []                # Ny virtuell gruppe for Photon
 }
 
-# Initialize SPI
-spi = spidev.SpiDev()
-spi.open(SPI_BUS, SPI_DEVICE)
-spi.max_speed_hz = 8000000
+if spidev_available:
+    # Initialize SPI
+    spi = spidev.SpiDev()
+    spi.open(SPI_BUS, SPI_DEVICE)
+    spi.max_speed_hz = 8000000
+else:
+    spi = None
+
 
 # SPI Lock for thread safety
 spi_lock = threading.Lock()
@@ -115,9 +123,10 @@ def hsv_to_rgb(h, s, v):
 
 def send_led_data(led_data):
     with spi_lock:
-        spi.xfer2(START_FRAME)
-        spi.xfer2(led_data)
-        spi.xfer2(END_FRAME)
+        if spi:
+            spi.xfer2(START_FRAME)
+            spi.xfer2(led_data)
+            spi.xfer2(END_FRAME)
 
 def create_led_buffer():
     buffer = []

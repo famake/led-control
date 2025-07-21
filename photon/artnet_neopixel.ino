@@ -7,12 +7,20 @@
 const uint16_t ARTNET_PORT = 6454;
 UDP artnet;
 
+// Buffer for storing the Photon\'s IP address
+char ipAddress[24];
+
 Adafruit_NeoPixel strip(PIXEL_COUNT, PIXEL_PIN, PIXEL_TYPE);
 
 void setup() {
   strip.begin();
   strip.show();
   artnet.begin(ARTNET_PORT);
+  // Obtain the local IP address and report it to the Particle Cloud
+  IPAddress ip = WiFi.localIP();
+  snprintf(ipAddress, sizeof(ipAddress), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+  Particle.variable("ip", ipAddress);
+  Particle.publish("ip", ipAddress, PRIVATE);
 }
 
 void loop() {

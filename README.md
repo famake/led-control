@@ -10,6 +10,8 @@ a Particle Photon device by setting `PARTICLE_DEVICE_ID` and
 The web client lives in `dotstar-web-ui` and was bootstrapped with
 Create React App.
 
+The code for Particle Photon lives in `photon`.
+
 ## Requirements
 
 - Python 3 with the packages listed in `requirements.txt`

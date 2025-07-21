@@ -1,10 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-try:
-    import spidev
-    spidev_available = True
-except:
-    spidev_available = False
+import socket
+import struct
 import time
 import threading
 import random
@@ -15,28 +12,8 @@ import os
 from dotenv import load_dotenv
 
 
-import requests  # ny import for å snakke med Particle Cloud
 
 load_dotenv()  # Leser fra .env-filen
-
-# Konfigurasjon for Photon-kontroll
-PARTICLE_DEVICE_ID = os.environ["PARTICLE_DEVICE_ID"]
-PARTICLE_ACCESS_TOKEN = os.environ["PARTICLE_ACCESS_TOKEN"]
-
-def send_to_photon(r, g, b):
-    """Sender RGB-verdi til Photon via Particle Cloud"""
-    url = f"https://api.particle.io/v1/devices/{PARTICLE_DEVICE_ID}/setColor"
-    data = {
-        "access_token": PARTICLE_ACCESS_TOKEN,
-        "args": f"{r},{g},{b}"
-    }
-    try:
-        response = requests.post(url, data=data)
-        logging.info(f"Sendt til Photon: {response.text}")
-        return response.json()
-    except Exception as e:
-        logging.error(f"Feil ved sending til Photon: {e}")
-        return {"error": str(e)}
 
 
 # Configure logging
@@ -46,36 +23,28 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 CORS(app)
 
-# LED Configuration
-NUM_LEDS = 153
-SPI_BUS = 0
-SPI_DEVICE = 0
-BRIGHTNESS = 255
+# LED/Device Configuration
+DEVICES_FILE = "devices.json"
+if os.path.exists(DEVICES_FILE):
+    with open(DEVICES_FILE, "r") as f:
+        DEVICES = json.load(f)
+else:
+    DEVICES = {}
+
+DEVICE_OFFSETS = {}
+LED_GROUPS = {}
+offset = 0
+for name, info in DEVICES.items():
+    count = int(info.get("pixels", 0))
+    LED_GROUPS[name] = list(range(offset, offset + count))
+    DEVICE_OFFSETS[name] = offset
+    offset += count
+NUM_LEDS = offset
+
 FRAME_DELAY = 1 / 60  # 60 FPS
 
-# Define LED Groups (default ranges)
-LED_GROUPS = {
-    "group1": list(range(0, 109)),   # Top shelf
-    "group2": list(range(109, 131)), # Left shelf
-    "group3": list(range(131, 153)), # Right shelf
-    "photon_ring": []                # Ny virtuell gruppe for Photon
-}
-
-if spidev_available:
-    # Initialize SPI
-    spi = spidev.SpiDev()
-    spi.open(SPI_BUS, SPI_DEVICE)
-    spi.max_speed_hz = 8000000
-else:
-    spi = None
-
-
-# SPI Lock for thread safety
-spi_lock = threading.Lock()
-
-# Frame constants
-START_FRAME = [0x00] * 4
-END_FRAME = [0xFF] * ((NUM_LEDS + 15) // 16)
+ARTNET_PORT = 6454
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # Shared LED state
 current_colors = {group: [0, 0, 0] for group in LED_GROUPS}
@@ -125,30 +94,31 @@ def hsv_to_rgb(h, s, v):
         r, g, b = c, 0, x
     return [int((r + m) * 255), int((g + m) * 255), int((b + m) * 255)]
 
-def send_led_data(led_data):
-    with spi_lock:
-        if spi:
-            spi.xfer2(START_FRAME)
-            spi.xfer2(led_data)
-            spi.xfer2(END_FRAME)
+def send_artnet(ip, universe, data):
+    length = len(data)
+    header = b"Art-Net\x00" + struct.pack("!H", 0x5000) + struct.pack("!H", 14)
+    header += struct.pack("!BBH", 0, 0, universe) + struct.pack("!H", length)
+    packet = header + bytes(data)
+    try:
+        sock.sendto(packet, (ip, ARTNET_PORT))
+    except Exception as e:
+        logging.error(f"Art-Net send error: {e}")
 
-def create_led_buffer():
+def create_device_buffer(group):
     buffer = []
-    for i in range(NUM_LEDS):
-        if i in led_overrides:
-            color = led_overrides[i]
+    leds = LED_GROUPS.get(group, [])
+    for led in leds:
+        if led in led_overrides:
+            color = led_overrides[led]
         else:
-            color = [0, 0, 0]
-            for group, leds in LED_GROUPS.items():
-                if i in leds:
-                    color = current_colors[group]
-                    break
-        buffer.extend([0xFF, color[2], color[1], color[0]])
+            color = current_colors.get(group, [0, 0, 0])
+        buffer.extend(color)
     return buffer
 
 def update_leds():
-    led_data = create_led_buffer()
-    send_led_data(led_data)
+    for group, info in DEVICES.items():
+        buffer = create_device_buffer(group)
+        send_artnet(info["ip"], int(info.get("universe", 0)), buffer)
 
 def fade_to_color(group, target_color, duration=2, allowed_effects=None):
     if allowed_effects is None:
@@ -363,14 +333,9 @@ def set_color_endpoint():
 
     for group in groups_req:
         if group in LED_GROUPS:
-            if group == "photon_ring":
-                # Send til Particle Photon via Cloud
-                logging.info(f"Sender farge {color} til Photon-ring")
-                send_to_photon(*color)
-            else:
-                current_effects[group] = "fade"
-                logging.info(f"Setter farge {color} for {group}")
-                threading.Thread(target=fade_to_color, args=(group, color), daemon=True).start()
+            current_effects[group] = "fade"
+            logging.info(f"Setter farge {color} for {group}")
+            threading.Thread(target=fade_to_color, args=(group, color), daemon=True).start()
 
     return jsonify({"status": "color set", "groups": groups_req, "color": color})
 

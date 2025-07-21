@@ -1,11 +1,11 @@
 # Raspberry Pi LED Controller
 
 This repository contains a small Flask backend and a React based web interface
-for controlling DotStar LED strips connected to a Raspberry Pi. The backend
-script `app.py` exposes several REST endpoints for setting
-colors, running effects and managing LED groups. It can also send color data to
-a Particle Photon device by setting `PARTICLE_DEVICE_ID` and
-`PARTICLE_ACCESS_TOKEN` in the script.
+for controlling LED strips over the network. The backend script `app.py`
+exposes several REST endpoints for setting colors, running effects and managing
+LED groups. LED data is transmitted to other devices using the Art-Net
+protocol. A list of target devices with IP address, Art-Net universe and pixel
+count is stored in `devices.json`.
 
 The web client lives in `dotstar-web-ui` and was bootstrapped with
 Create React App.
@@ -16,8 +16,6 @@ The code for Particle Photon lives in `photon`.
 
 - Python 3 with the packages listed in `requirements.txt`
 - Node.js and npm for the web UI
-- On the Raspberry Pi you also need the system package `python3-spidev` for SPI
-  access
 
 ## Running
 

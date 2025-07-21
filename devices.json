@@ -1,0 +1,6 @@
+{
+  "group1": {"ip": "192.168.0.101", "universe": 0, "pixels": 109},
+  "group2": {"ip": "192.168.0.102", "universe": 0, "pixels": 22},
+  "group3": {"ip": "192.168.0.103", "universe": 0, "pixels": 22},
+  "photon_ring": {"ip": "192.168.0.104", "universe": 0, "pixels": 40}
+}

@@ -1,0 +1,15 @@
+# /etc/systemd/system/led-frontend.service
+[Unit]
+Description=LED Frontend (React)
+After=network.target
+
+[Service]
+User=mikki
+WorkingDirectory=/home/mikki/led-control/dotstar-web-ui
+ExecStart=/usr/bin/npm start
+Restart=always
+Environment=PATH=/usr/bin:/usr/local/bin
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

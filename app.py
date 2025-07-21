@@ -12,12 +12,16 @@ import logging
 import math
 import json
 import os
+from dotenv import load_dotenv
+
 
 import requests  # ny import for å snakke med Particle Cloud
 
+load_dotenv()  # Leser fra .env-filen
+
 # Konfigurasjon for Photon-kontroll
-PARTICLE_DEVICE_ID = "fffffffff"
-PARTICLE_ACCESS_TOKEN = "aaaaaaaaaa"
+PARTICLE_DEVICE_ID = os.environ["PARTICLE_DEVICE_ID"]
+PARTICLE_ACCESS_TOKEN = os.environ["PARTICLE_ACCESS_TOKEN"]
 
 def send_to_photon(r, g, b):
     """Sender RGB-verdi til Photon via Particle Cloud"""

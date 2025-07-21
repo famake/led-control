@@ -1,0 +1,14 @@
+# /etc/systemd/system/led-backend.service
+[Unit]
+Description=LED Backend (Flask)
+After=network.target
+
+[Service]
+User=mikki
+WorkingDirectory=/home/mikki/led-control
+ExecStart=/usr/bin/python3 /home/mikki/led-control/app.py
+EnvironmentFile=/home/mikki/led-control/.env
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

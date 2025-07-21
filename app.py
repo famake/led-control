@@ -1,10 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-try:
-    import spidev
-    spidev_available = True
-except:
-    spidev_available = False
+import socket
 import time
 import threading
 import random
@@ -12,31 +8,6 @@ import logging
 import math
 import json
 import os
-from dotenv import load_dotenv
-
-
-import requests  # ny import for å snakke med Particle Cloud
-
-load_dotenv()  # Leser fra .env-filen
-
-# Konfigurasjon for Photon-kontroll
-PARTICLE_DEVICE_ID = os.environ["PARTICLE_DEVICE_ID"]
-PARTICLE_ACCESS_TOKEN = os.environ["PARTICLE_ACCESS_TOKEN"]
-
-def send_to_photon(r, g, b):
-    """Sender RGB-verdi til Photon via Particle Cloud"""
-    url = f"https://api.particle.io/v1/devices/{PARTICLE_DEVICE_ID}/setColor"
-    data = {
-        "access_token": PARTICLE_ACCESS_TOKEN,
-        "args": f"{r},{g},{b}"
-    }
-    try:
-        response = requests.post(url, data=data)
-        logging.info(f"Sendt til Photon: {response.text}")
-        return response.json()
-    except Exception as e:
-        logging.error(f"Feil ved sending til Photon: {e}")
-        return {"error": str(e)}
 
 
 # Configure logging
@@ -46,41 +17,24 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 CORS(app)
 
-# LED Configuration
-NUM_LEDS = 153
-SPI_BUS = 0
-SPI_DEVICE = 0
-BRIGHTNESS = 255
+# Frame configuration
 FRAME_DELAY = 1 / 60  # 60 FPS
 
-# Define LED Groups (default ranges)
-LED_GROUPS = {
-    "group1": list(range(0, 109)),   # Top shelf
-    "group2": list(range(109, 131)), # Left shelf
-    "group3": list(range(131, 153)), # Right shelf
-    "photon_ring": []                # Ny virtuell gruppe for Photon
-}
-
-if spidev_available:
-    # Initialize SPI
-    spi = spidev.SpiDev()
-    spi.open(SPI_BUS, SPI_DEVICE)
-    spi.max_speed_hz = 8000000
+# Device configuration
+DEVICES_FILE = "devices.json"
+if os.path.exists(DEVICES_FILE):
+    with open(DEVICES_FILE, "r") as f:
+        DEVICES = json.load(f)
 else:
-    spi = None
+    DEVICES = {}
 
-
-# SPI Lock for thread safety
-spi_lock = threading.Lock()
-
-# Frame constants
-START_FRAME = [0x00] * 4
-END_FRAME = [0xFF] * ((NUM_LEDS + 15) // 16)
+# Map device names to LED index lists
+LED_GROUPS = {name: list(range(dev["num_pixels"])) for name, dev in DEVICES.items()}
 
 # Shared LED state
 current_colors = {group: [0, 0, 0] for group in LED_GROUPS}
 current_effects = {}  # e.g. current_effects[group] = "pulsate"
-led_overrides = {}    # per-LED overrides
+led_overrides = {group: {} for group in LED_GROUPS}  # per-group LED overrides
 
 # ----- Favorites Storage -----
 FAVORITES_FILE = "favorites.json"
@@ -125,30 +79,40 @@ def hsv_to_rgb(h, s, v):
         r, g, b = c, 0, x
     return [int((r + m) * 255), int((g + m) * 255), int((b + m) * 255)]
 
-def send_led_data(led_data):
-    with spi_lock:
-        if spi:
-            spi.xfer2(START_FRAME)
-            spi.xfer2(led_data)
-            spi.xfer2(END_FRAME)
+def send_artnet(ip, universe, data):
+    packet = bytearray()
+    packet.extend(b'Art-Net\x00')
+    packet.extend((0x5000).to_bytes(2, 'little'))
+    packet.extend((14).to_bytes(2, 'big'))
+    packet.extend(b'\x00')  # sequence
+    packet.extend(b'\x00')  # physical
+    packet.extend(int(universe).to_bytes(2, 'little'))
+    packet.extend(len(data).to_bytes(2, 'big'))
+    packet.extend(bytes(data))
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.sendto(packet, (ip, 6454))
+    finally:
+        sock.close()
 
-def create_led_buffer():
+
+def create_led_buffer(group):
     buffer = []
-    for i in range(NUM_LEDS):
-        if i in led_overrides:
-            color = led_overrides[i]
+    num_leds = len(LED_GROUPS[group])
+    overrides = led_overrides.get(group, {})
+    for i in range(num_leds):
+        if i in overrides:
+            color = overrides[i]
         else:
-            color = [0, 0, 0]
-            for group, leds in LED_GROUPS.items():
-                if i in leds:
-                    color = current_colors[group]
-                    break
-        buffer.extend([0xFF, color[2], color[1], color[0]])
+            color = current_colors[group]
+        buffer.extend(color)
     return buffer
 
+
 def update_leds():
-    led_data = create_led_buffer()
-    send_led_data(led_data)
+    for group, device in DEVICES.items():
+        data = create_led_buffer(group)
+        send_artnet(device["ip"], device["universe"], data)
 
 def fade_to_color(group, target_color, duration=2, allowed_effects=None):
     if allowed_effects is None:
@@ -212,11 +176,11 @@ def starry_night_effect(group, speed):
         count = max(1, len(leds) // 10)
         twinkle = random.sample(leds, count)
         for led in twinkle:
-            led_overrides[led] = [255, 255, 255]
+            led_overrides[group][led] = [255, 255, 255]
         update_leds()
         time.sleep(speed / 2)
         for led in twinkle:
-            led_overrides.pop(led, None)
+            led_overrides[group].pop(led, None)
         update_leds()
         time.sleep(speed)
 
@@ -273,7 +237,7 @@ def candle_gradient_effect(group, speed, intensity, gradient_amplitude, gradient
             final_factor = global_factor * local_factor
             final_factor = max(0.7, min(final_factor, 1.8))
             target = [min(255, int(base_color[i] * final_factor)) for i in range(3)]
-            led_overrides[led] = target
+            led_overrides[group][led] = target
         update_leds()
         time.sleep(0.05)
 
@@ -298,11 +262,11 @@ def gradient_wave_effect(group, speed):
             pos = idx / (n - 1) if n > 1 else 0
             brightness = high - (high - low) * pos if phase < 0.5 else low + (high - low) * pos
             grad_color = [min(255, int(c * brightness)) for c in base]
-            led_overrides[led] = grad_color
+            led_overrides[group][led] = grad_color
         update_leds()
         time.sleep(0.05)
     for led in leds:
-        led_overrides.pop(led, None)
+        led_overrides[group].pop(led, None)
     update_leds()
 
 def snake_effect(group, speed):
@@ -319,13 +283,13 @@ def snake_effect(group, speed):
                     factor = 1 - (dist / snake_length)
                     hue = (pos * 10) % 360
                     snake_color = hsv_to_rgb(hue, 1.0, factor)
-                    led_overrides[led] = snake_color
+                    led_overrides[group][led] = snake_color
                 else:
-                    led_overrides.pop(led, None)
+                    led_overrides[group].pop(led, None)
             update_leds()
             time.sleep(speed / 20)
         for led in leds:
-            led_overrides.pop(led, None)
+            led_overrides[group].pop(led, None)
         update_leds()
 
 def favorite_cycle_effect(group, speed):
@@ -363,14 +327,9 @@ def set_color_endpoint():
 
     for group in groups_req:
         if group in LED_GROUPS:
-            if group == "photon_ring":
-                # Send til Particle Photon via Cloud
-                logging.info(f"Sender farge {color} til Photon-ring")
-                send_to_photon(*color)
-            else:
-                current_effects[group] = "fade"
-                logging.info(f"Setter farge {color} for {group}")
-                threading.Thread(target=fade_to_color, args=(group, color), daemon=True).start()
+            current_effects[group] = "fade"
+            logging.info(f"Setter farge {color} for {group}")
+            threading.Thread(target=fade_to_color, args=(group, color), daemon=True).start()
 
     return jsonify({"status": "color set", "groups": groups_req, "color": color})
 
@@ -433,7 +392,8 @@ def turn_off_endpoint():
 @app.route('/off_all', methods=['POST'])
 def turn_off_all_endpoint():
     current_effects.clear()
-    led_overrides.clear()
+    for g in led_overrides:
+        led_overrides[g].clear()
     for group in LED_GROUPS:
         current_colors[group] = [0, 0, 0]
     update_leds()
@@ -451,7 +411,8 @@ def update_group_range_endpoint():
     try:
         start = int(start)
         end = int(end)
-        if start < 0 or end >= NUM_LEDS or start > end:
+        max_leds = DEVICES[group]["num_pixels"]
+        if start < 0 or end >= max_leds or start > end:
             return jsonify({"status": "error", "message": "Invalid range values"}), 400
         LED_GROUPS[group] = list(range(start, end + 1))
         logging.info(f"Updated {group} active range to {start} - {end}")
@@ -478,6 +439,29 @@ def update_favorites():
     except Exception as e:
         logging.error(f"Error saving favorites: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/devices', methods=['GET'])
+def get_devices():
+    return jsonify(DEVICES)
+
+
+@app.route('/devices', methods=['POST'])
+def update_devices():
+    global DEVICES, LED_GROUPS, current_colors, led_overrides
+    data = request.json
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "Payload must be a dict"}), 400
+    DEVICES = data
+    try:
+        with open(DEVICES_FILE, "w") as f:
+            json.dump(DEVICES, f)
+    except Exception as e:
+        logging.error(f"Error saving devices: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+    LED_GROUPS = {name: list(range(dev["num_pixels"])) for name, dev in DEVICES.items()}
+    current_colors = {group: [0, 0, 0] for group in LED_GROUPS}
+    led_overrides = {group: {} for group in LED_GROUPS}
+    return jsonify({"status": "updated", "devices": DEVICES})
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000, debug=True)

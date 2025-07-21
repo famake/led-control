@@ -1,0 +1,4 @@
+{
+  "ring": {"ip": "192.168.0.50", "universe": 0, "num_pixels": 16},
+  "shelf": {"ip": "192.168.0.51", "universe": 1, "num_pixels": 150}
+}
